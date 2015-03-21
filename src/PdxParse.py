@@ -1,3 +1,5 @@
+import sys, types
+
 class Node:
    def __init__(self, name, id = -1, level = 0, data = None):
       self.id = id
@@ -60,7 +62,7 @@ class Parser:
       if not self.file: raise ValueError("No file opened!")
       
       with open(self.file, 'r') as f:
-         lines = f.readlines()
+         lines = f.read().splitlines()
       
       root = Node(id=0, name="root", level=0)
 
@@ -68,6 +70,9 @@ class Parser:
       blocksOpened = 0
       
       for line in lines:
+         if curNode == None:
+            raise BaseException("WTF! (file=%s)" % self.file)
+         
          # strip whitespaces
          l = line.strip()
          
@@ -75,16 +80,29 @@ class Parser:
          if len(l) == 0 or l.startswith('#'):
             continue
          
+         # strip everything after a '#', except if it is within "quotation marks"
+         if l.count('#') >= 1:
+            inString = False
+            idx = 0
+            for c in l:
+               if c=='"': inString = not inString
+               if c=='#' and not inString:
+                  l = l[:idx]
+                  break
+               idx += 1
+         
          # assignment?
-         if l.count('=') > 1: raise BaseException("Invalid line - multiple '=' assignments! "+l)
+         if l.count('=') > 1:
+            sys.stdout.write('Warning (line ignored)')
+            print("Invalid line - multiple '=' assignments!\nline: '"+l+"'\n(file "+self.file+")")
+            continue
+         
          elif l.count('=') == 1:
-            var, val = l.split('=')[0].strip(), l.split('=')[1].strip()
+            var, val = l.split('=')[0].strip().replace('"',''), l.split('=')[1].strip().replace('"','')
              
             # check if value is valid (no { block opened, not empty)
             if len(val) > 0 and val.count('{') == 0 and val.count('}') == 0:
-               if val.count('"') > 0: # probably a string, strip the quotation marks
-                  val.replace('"','')
-               elif val.isdigit():
+               if val.isdigit():
                   val = int(val)
                   
                curNode.addChild(Node(name=var, data=val))
@@ -106,11 +124,19 @@ class Parser:
                
                curNode.addChild(Node(name=var, data=strpVal))
             
-            # check if { block is opened
-            elif val=='{':
+            # check if { block is opened 
+            elif val.startswith('{'):
+               
                blocksOpened += 1
                curNode = curNode.addChild(Node(name=var))
-               print "Adding empty child node %s." % curNode.hierarchyStr()
+               
+               # parse rest of line as data
+               if len(val)>1:
+                  val = val[1:].strip()
+                  
+                  if val.isdigit(): val = int(val)
+                  else: val = val.replace('"','')
+                  curNode.data = val 
          
          # block opened/closed?
          elif l.count('{')==1:
@@ -132,13 +158,38 @@ class Parser:
             blocksOpened -= 1
             
          else: # no assignments, not blank - this would be (multiline) data for the current object
-            assert (l.count('{') == l.count('}') == 0)
+            # check if there's a block being closed somewhere
+            if l.count('}') == 1:
+               if curNode is root:
+                  raise BaseException("WTF?! %s, '%s'" % (self.file, l))
+               tpl = l.split('}')
+               
+               itm = tpl[0].strip()
+               if itm.count('"') > 0:
+                  itm = itm.replace('"','')
+               elif itm.isdigit():
+                  itm = int(itm)
+                  
+               if not curNode.data: curNode.data = itm
+               elif type(curNode.data) in types.StringTypes: curNode.data += itm
+               else: curNode.data.append(itm)
+               
+               curNode = curNode.parent
+               blocksOpened -= 1
+               
+               if len(tpl) > 1 and tpl[1]!='':
+                  print tpl
+                  raise BaseException("Anything after a } in the same line will be ignored. (file=%s, line='%s')" % (self.file, l))
+            elif not (l.count('{') == l.count('}') == 0):
+               raise BaseException("WTF? file=%s" % self.file)
+            
             if curNode.data:
                curNode.data = " ".join([curNode.data, l.strip()])
             else:
                curNode.data = l.strip()
             
       if blocksOpened != 0:
-         raise BaseException("Number of opened and closed blocks does not match: %d blocks open." % blocksOpened)
+         print root
+         raise BaseException("Number of opened and closed blocks does not match: %d blocks open. (%s)" % (blocksOpened, self.file))
       
       return root

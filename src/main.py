@@ -30,6 +30,16 @@ PRV_LAKE = 4
 # CLASS DEFINITIONS
 #===============================================================================
 
+class Country:
+   def __init__(self, name=u"Unnamed", id=-1, tag="???", color=BLACK):
+      self.name = name
+      self.id = id
+      self.tag = tag
+      self.color = color
+      
+   def __str__(self):
+      return "%s %s (%d %d %d)" % (self.tag, self.name, self.color[0], self.color[1], self.color[2])
+
 class Province:
    def __init__(self, name=u"Unnamed", id=-1, mapColor = BLACK, hash = None, pixels = None, bndRect = None,
                 prvType=PRV_UNKNOWN):
@@ -112,6 +122,11 @@ class Province:
       print self.id, self.name, self.mapColor, self.prvType, self.bndRect
       print self.pixels, self.borderPixels
       
+class ProvinceHistory:
+   def __init__(self, owner='???', controller='???'):
+      self.owner = owner
+      self.controller = controller
+      self.events = []
       
 #===============================================================================
 # GLOBAL FUNCTIONS
@@ -141,12 +156,15 @@ def main():
    euDir = os.path.join("C:\\","Program Files (x86)","Steam","steamapps","common","Europa Universalis IV")
    
    mapFile = os.path.join(euDir, "map", "provinces.bmp")
+   histPath = os.path.join(euDir, "history", "provinces")
    deffile = os.path.join(euDir, "map", "definition.csv")
    defaultMap = os.path.join(euDir, "map", "default.map")
+   countryTags = os.path.join(euDir, "common", "country_tags", "00_countries.txt")
    
    # read definition.csv
    sys.stdout.write("Building provinces... ")
    provinces = [None] * 2954
+   prvHistory = [None] * 2954
    colorHashToProvince = {}
    count = 0
    with open(deffile, 'r') as f:
@@ -186,9 +204,49 @@ def main():
    # read default.map
    sys.stdout.write("Parsing default map... ")
    prs = PdxParse.Parser(defaultMap)
+   root = prs.read()
+   
+   seaProvinces = root.children['sea_starts'].data
+   lakeProvinces = root.children['lakes'].data
    print "ok"
-   print prs.read()   
+
+   # read country files
+   sys.stdout.write("Parsing countries... ")
+   prs = PdxParse.Parser(countryTags)
+   root = prs.read()
+   print "ok"
+   
+   countries = {}
+   for tag,node in root.children.items():
+      countryFile = node.data
+      f = os.path.join(euDir, "common", countryFile)
+      if not os.path.isfile(f):
+         print "Couldn't resolve tag: %s (%s)." % (tag, f)
+         continue
       
+      cntryParse = PdxParse.Parser(os.path.join(euDir, "common", countryFile))
+      cntryRoot = cntryParse.read()
+      
+      name = os.path.splitext(os.path.basename(countryFile))[0]
+      r,g,b = cntryRoot.children['color'].data
+      cnt = Country(name=name, tag=tag, color=pygame.Color(r,g,b,255))
+      countries[tag] = cnt
+   
+   
+   # read province histories
+   for file in os.listdir(histPath):
+      l, r = os.path.splitext(file)[0].split('-')
+      pid = int(l.strip())
+      name = r.strip()
+      
+      if provinces[pid].name != name:
+         print "Warning: Province %d name %s doesn't match file %s in history/provinces." % (pid, provinces[pid].name, file)
+         
+      histParse = PdxParse.Parser(os.path.join(histPath, file))
+      histRoot = histParse.read()
+      
+      print histRoot
+   
    return
 
    # check if dump file exists
@@ -338,6 +396,11 @@ def main():
       
    print "%d ok (%d KB)" % (count, totalBytes / 1024)
    
+   for pid in seaProvinces:
+      provinces[pid].prvType = PRV_OCEAN
+   for pid in lakeProvinces:
+      provinces[pid].prvType = PRV_LAKE
+   
    
    testprv = provinces[125]
 
@@ -373,11 +436,15 @@ def main():
             x = (byte * BITS_PER_BYTE + bit) % p.bndRect.width
             y = (byte * BITS_PER_BYTE + bit) // p.bndRect.width
             
-            if border: pass
+            if border: pass # not necessary to draw, just omit these pixels.
                #worldmap.set_at((x+p.bndRect.left,y+p.bndRect.top), BLACK)
             elif active:
-               worldmap.set_at((x+p.bndRect.left,y+p.bndRect.top), pygame.Color(34,190,240,255))
-      print p.id
+               if p.prvType == PRV_LAKE: color = pygame.Color(34,190,240,255)
+               elif p.prvType == PRV_OCEAN: color = pygame.Color(20,140,190,255)
+               else: color = pygame.Color(123,124,125) 
+               worldmap.set_at((x+p.bndRect.left,y+p.bndRect.top), color)
+               
+      if p.id % 100 == 0: print p.id
    pygame.image.save(worldmap,'world.bmp')
          
    # export mask bitmaps for every province
