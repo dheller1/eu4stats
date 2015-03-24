@@ -25,6 +25,8 @@ PRV_WASTELAND = 2
 PRV_OCEAN = 3
 PRV_LAKE = 4
 
+START_DATE = '1444.11.11'
+
 
 #===============================================================================
 # CLASS DEFINITIONS
@@ -51,6 +53,35 @@ class Province:
       self.borderPixels = []
       self.bndRect = bndRect
       self.prvType = PRV_UNKNOWN
+      self.history = None
+      
+      self.curDate = '0.0.0'
+   
+   def ProcessHistoryEvent(self, event):
+      if 'owner' in event.children:
+         self.history.children['owner'] = event.children['owner']
+      if 'controller' in event.children:
+         self.history.children['controller'] = event.children['controller']
+      
+   def ProgressTime(self, targetDate):
+      if not self.history:
+         return 0
+      
+      if PdxParse.Node.DateRegex.match(targetDate) is None:
+         raise ValueError('Invalid target date \'%s\' for province %s.' % (targetDate, self.name))
+      
+      if targetDate < self.curDate:
+         return 0
+      
+      dc = self.history.getDateChilds(start=self.curDate, end=targetDate)
+      
+      numEventsProcessed = 0
+      for event in dc:
+         self.ProcessHistoryEvent(event)
+         numEventsProcessed += 1
+         
+      self.curDate = targetDate
+      return numEventsProcessed
       
    def serialize(self):
       s = b""
@@ -161,10 +192,14 @@ def main():
    defaultMap = os.path.join(euDir, "map", "default.map")
    countryTags = os.path.join(euDir, "common", "country_tags", "00_countries.txt")
    
+   test = PdxParse.Parser(os.path.join(histPath, "118 - Roma.txt"))
+   root = test.read2()
+   
+   #print root
+   
    # read definition.csv
    sys.stdout.write("Building provinces... ")
    provinces = [None] * 2954
-   prvHistory = [None] * 2954
    colorHashToProvince = {}
    count = 0
    with open(deffile, 'r') as f:
@@ -204,7 +239,7 @@ def main():
    # read default.map
    sys.stdout.write("Parsing default map... ")
    prs = PdxParse.Parser(defaultMap)
-   root = prs.read()
+   root = prs.read2()
    
    seaProvinces = root.children['sea_starts'].data
    lakeProvinces = root.children['lakes'].data
@@ -213,10 +248,10 @@ def main():
    # read country files
    sys.stdout.write("Parsing countries... ")
    prs = PdxParse.Parser(countryTags)
-   root = prs.read()
+   root = prs.read2()
    print "ok"
    
-   countries = {}
+   countriesByTag = {}
    for tag,node in root.children.items():
       countryFile = node.data
       f = os.path.join(euDir, "common", countryFile)
@@ -225,29 +260,38 @@ def main():
          continue
       
       cntryParse = PdxParse.Parser(os.path.join(euDir, "common", countryFile))
-      cntryRoot = cntryParse.read()
+      cntryRoot = cntryParse.read2()
       
       name = os.path.splitext(os.path.basename(countryFile))[0]
       r,g,b = cntryRoot.children['color'].data
       cnt = Country(name=name, tag=tag, color=pygame.Color(r,g,b,255))
-      countries[tag] = cnt
-   
+      countriesByTag[tag] = cnt
    
    # read province histories
+   sys.stdout.write('Parsing province histories... ')
    for file in os.listdir(histPath):
-      l, r = os.path.splitext(file)[0].split('-')
-      pid = int(l.strip())
-      name = r.strip()
+      basename = os.path.splitext(file)[0]
+      idx = basename.find('-')
       
-      if provinces[pid].name != name:
-         print "Warning: Province %d name %s doesn't match file %s in history/provinces." % (pid, provinces[pid].name, file)
-         
+      if(idx == -1): idx = basename.find(' ')
+      
+      pid = int( basename[:idx].strip() )
+      name = basename[idx+1:].strip()
+      
+      # too many warnings here
+      #if provinces[pid].name != name:
+      #   print "Warning: Province %d name %s doesn't match file %s in history/provinces." % (pid, provinces[pid].name, file)
+      
       histParse = PdxParse.Parser(os.path.join(histPath, file))
-      histRoot = histParse.read()
+      histRoot = histParse.read2()
       
-      print histRoot
+      provinces[pid].history = histRoot
    
-   return
+   noHistCount = 0
+   for prv in provinces:
+      if prv and not prv.history: noHistCount += 1
+   
+   print "%d ok%s" % (len(os.listdir(histPath)), ", %d not found" % noHistCount if noHistCount>0 else "")
 
    # check if dump file exists
    if os.path.isfile("clrpixel.dmp"):
@@ -424,6 +468,20 @@ def main():
    
    testprv.serialize()
    
+   
+   # before painting the worldmap, progress time to the start date
+   
+   sys.stdout.write("Progressing time to %s... " % START_DATE)
+   eventCount = 0
+   for p in provinces:
+      if p is None: continue
+      eventCount += p.ProgressTime(START_DATE)
+   
+   print "ok, %d events" % eventCount
+   
+   #============================================================================
+   # Draw World Map
+   #============================================================================
    worldmap = pygame.Surface((5632,2048))
    for p in provinces:
       if p is None: continue
@@ -441,7 +499,15 @@ def main():
             elif active:
                if p.prvType == PRV_LAKE: color = pygame.Color(34,190,240,255)
                elif p.prvType == PRV_OCEAN: color = pygame.Color(20,140,190,255)
-               else: color = pygame.Color(123,124,125) 
+               else:
+                  # find color by country
+                  if p.history and p.history.children.has_key('owner'):
+                     tag = p.history.children['owner'].data
+                     country = countriesByTag[tag]
+                     color = country.color
+                     
+                  else:
+                     color = pygame.Color(123,124,125) 
                worldmap.set_at((x+p.bndRect.left,y+p.bndRect.top), color)
                
       if p.id % 100 == 0: print p.id
