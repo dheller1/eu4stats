@@ -3,6 +3,8 @@ import PIL.Image
 import PdxParse
 import cPickle, csv, json, struct
 import math, os, sys
+from PyQt4 import QtCore, QtGui
+from ui import MainWindow
 
 #===============================================================================
 # DEFINES
@@ -56,6 +58,10 @@ class Province:
       self.history = None
       
       self.curDate = '0.0.0'
+      
+   def ExportToFile(self, file):
+      with open(file, 'wb') as f:
+         f.write(self.serialize())
    
    def ProcessHistoryEvent(self, event):
       if 'owner' in event.children:
@@ -82,6 +88,22 @@ class Province:
          
       self.curDate = targetDate
       return numEventsProcessed
+   
+   def ToQBitmap(self):
+      if not self.pixels: return None
+      
+      #bmp = QtGui.QBitmap(self.bndRect.width, self.bndRect.height)
+      img = QtGui.QImage(self.bndRect.width, self.bndRect.height, QtGui.QImage.Format_Mono)
+      
+      for byte in range(len(self.pixels)):
+         for bit in range(BITS_PER_BYTE):
+            idx = byte * BITS_PER_BYTE + bit
+            x, y = idx % self.bndRect.width, idx // self.bndRect.width
+            if x < self.bndRect.width and y < self.bndRect.height and self.pixels[byte] & (1<<bit):
+               img.setPixel(x, y, 1)
+      
+      bmp = QtGui.QBitmap.fromImage(img)
+      return bmp
       
    def serialize(self):
       s = b""
@@ -160,7 +182,7 @@ class ProvinceHistory:
       self.events = []
       
 #===============================================================================
-# GLOBAL FUNCTIONS
+# GLOBAL HELPER FUNCTIONS
 #===============================================================================
 
 def hash_color(*args):
@@ -180,198 +202,11 @@ def unhash_color(hash):
    return r,g,b
 
 #===============================================================================
-# MAIN PROGRAM 
+# DATAFILE PARSING AND PROCESSING FUNCTIONS
 #===============================================================================
 
-def main():
-   euDir = os.path.join("C:\\","Program Files (x86)","Steam","steamapps","common","Europa Universalis IV")
-   
-   mapFile = os.path.join(euDir, "map", "provinces.bmp")
-   histPath = os.path.join(euDir, "history", "provinces")
-   deffile = os.path.join(euDir, "map", "definition.csv")
-   defaultMap = os.path.join(euDir, "map", "default.map")
-   countryTags = os.path.join(euDir, "common", "country_tags", "00_countries.txt")
-   
-   test = PdxParse.Parser(os.path.join(histPath, "118 - Roma.txt"))
-   root = test.read2()
-   
-   #print root
-   
-   # read definition.csv
-   sys.stdout.write("Building provinces... ")
-   provinces = [None] * 2954
-   colorHashToProvince = {}
-   count = 0
-   with open(deffile, 'r') as f:
-      rdr = csv.reader(f, delimiter=';')
-      
-      for row in rdr:
-         if len(row) < 5:
-            print "Invalid line in definition.csv: %s" % row
-            continue
-         
-         if not row[0].isdigit(): # or not row[5] == 'x': # probably the first line, just skip it
-            continue
-         
-         try:
-            id = int(row[0])
-            color = int(row[1]), int(row[2]), int(row[3])
-         except ValueError:
-            print "Invalid line in definition.csv: %s" % row
-            continue
-         
-         try:
-            if(row[4]!=''): name = str(row[4])
-            else: name = str(row[5])
-         except ValueError:
-            print "Invalid line in definition.csv: %s" % row
-            continue
-            
-         hash = hash_color(color)
-         prv = Province(name=name, id=id, mapColor=pygame.Color(color[0], color[1], color[2], 255), hash=hash)
-         assert(id < len(provinces))
-         provinces[id] = prv
-         colorHashToProvince[hash] = prv
-         count += 1
-   print "%d ok" % count
-   
-   
-   # read default.map
-   sys.stdout.write("Parsing default map... ")
-   prs = PdxParse.Parser(defaultMap)
-   root = prs.read2()
-   
-   seaProvinces = root.children['sea_starts'].data
-   lakeProvinces = root.children['lakes'].data
-   print "ok"
-
-   # read country files
-   sys.stdout.write("Parsing countries... ")
-   prs = PdxParse.Parser(countryTags)
-   root = prs.read2()
-   print "ok"
-   
-   countriesByTag = {}
-   for tag,node in root.children.items():
-      countryFile = node.data
-      f = os.path.join(euDir, "common", countryFile)
-      if not os.path.isfile(f):
-         print "Couldn't resolve tag: %s (%s)." % (tag, f)
-         continue
-      
-      cntryParse = PdxParse.Parser(os.path.join(euDir, "common", countryFile))
-      cntryRoot = cntryParse.read2()
-      
-      name = os.path.splitext(os.path.basename(countryFile))[0]
-      r,g,b = cntryRoot.children['color'].data
-      cnt = Country(name=name, tag=tag, color=pygame.Color(r,g,b,255))
-      countriesByTag[tag] = cnt
-   
-   # read province histories
-   sys.stdout.write('Parsing province histories... ')
-   for file in os.listdir(histPath):
-      basename = os.path.splitext(file)[0]
-      idx = basename.find('-')
-      
-      if(idx == -1): idx = basename.find(' ')
-      
-      pid = int( basename[:idx].strip() )
-      name = basename[idx+1:].strip()
-      
-      # too many warnings here
-      #if provinces[pid].name != name:
-      #   print "Warning: Province %d name %s doesn't match file %s in history/provinces." % (pid, provinces[pid].name, file)
-      
-      histParse = PdxParse.Parser(os.path.join(histPath, file))
-      histRoot = histParse.read2()
-      
-      provinces[pid].history = histRoot
-   
-   noHistCount = 0
-   for prv in provinces:
-      if prv and not prv.history: noHistCount += 1
-   
-   print "%d ok%s" % (len(os.listdir(histPath)), ", %d not found" % noHistCount if noHistCount>0 else "")
-
-   # check if dump file exists
-   if os.path.isfile("clrpixel.dmp"):
-      sys.stdout.write("Loading dump file 'clrpixel.dmp'... ")
-      # load dump
-      colorHashToPixels = {}
-      with open("clrpixel.dmp","rb") as f:
-         bytes = f.read(SIZEOF_INT)
-         
-         numProvinces = struct.unpack('I', bytes)[0]
-         assert(0 < numProvinces <= 2954)
-         
-         for i in range(numProvinces):
-            bytes = f.read(2 * SIZEOF_INT)
-            colorHash, numPixels = struct.unpack('II', bytes)
-            assert(0 <= colorHash <= 256**3 and 0 <= numPixels <= 1000000)
-            
-            pixels = []
-            for j in range(numPixels):
-               bytes = f.read(2 * SIZEOF_SHORT)
-               px = struct.unpack('HH', bytes)
-               pixels.append(px)
-               
-            colorHashToPixels[colorHash] = pixels
-            if colorHash == 0:
-               print colorHash, ":", pixels
-      print "ok"
-   
-   else:
-      # read world map
-      print("Building from world map... ")
-      img = PIL.Image.open(mapFile)
-      px = img.load()
-      size_x, size_y = img.size
-      
-      print "Loaded '%s' (%dx%d px)." % ( mapFile, size_x, size_y )
-      
-      colorHashToPixels = {}
-      
-      numPixels = size_x*size_y
-      count = 0
-      
-      for i in range(size_x):
-         for j in range(size_y):
-            color = px[i, j]
-            colorHash = hash_color(color)
-            
-            if colorHash in colorHashToPixels:
-               colorHashToPixels[colorHash].append((i,j))
-            else:
-               colorHashToPixels[colorHash] = [(i,j), ]
-            
-            count += 1
-            if(count % (numPixels//10) == 0):
-               print "%.0f%%" % (100.0 * count / numPixels)
-               
-      numProvinces = len(colorHashToPixels.keys())         
-      print "Number of provinces: %d" % numProvinces
-      print "Saving color/pixel dictionary..."
-      
-      bin = True
-      save = True
-      
-      if bin and save:
-         with open('clrpixel.dmp','wb') as f:
-            f.write( struct.pack('I',numProvinces) )
-            for clrHash,pixels in colorHashToPixels.items():
-               f.write( struct.pack('II',clrHash, len(pixels)) )
-               for px in pixels:
-                  f.write( struct.pack('HH', px[0], px[1]))
-      elif save:
-         with open('clrpixel.dat','w') as f:
-            f.write('number_of_provinces: %d\n' % numProvinces)
-            for clrHash,pixels in colorHashToPixels.items():
-               f.write('%d : ' % clrHash)
-               f.write(' '.join(['(%d,%d)' % (px[0], px[1]) for px in pixels]))
-               f.write('\n')
-      
-   
-   sys.stdout.write("Populating provinces... ")
+def BuildProvincePixels(colorHashToProvince, colorHashToPixels):
+   sys.stdout.write("Building province geometries... ")
    count = 0
    totalBytes = 0
    for clrHash,pixels in colorHashToPixels.items():
@@ -439,49 +274,9 @@ def main():
       count += 1
       
    print "%d ok (%d KB)" % (count, totalBytes / 1024)
-   
-   for pid in seaProvinces:
-      provinces[pid].prvType = PRV_OCEAN
-   for pid in lakeProvinces:
-      provinces[pid].prvType = PRV_LAKE
-   
-   
-   testprv = provinces[125]
+   return 0
 
-   print testprv.name, testprv.bndRect
-   #[sys.stdout.write('{0:08b}'.format(testprv.pixels[i])) for i in range(len(testprv.pixels))]
-   surf = pygame.Surface((testprv.bndRect.size))
-   surf.fill(BLACK)
-   brdSurf = pygame.Surface((testprv.bndRect.size))
-   brdSurf.fill(BLACK)
-   
-   for byte in range(len(testprv.pixels)):
-      for bit in range(BITS_PER_BYTE):
-         active = (1 << bit) & testprv.pixels[byte]
-         border = (1 << bit) & testprv.borderPixels[byte]
-         x = (byte * BITS_PER_BYTE + bit) % testprv.bndRect.width
-         y = (byte * BITS_PER_BYTE + bit) // testprv.bndRect.width
-         if active: surf.set_at((x,y), WHITE)
-         if border: brdSurf.set_at((x,y), WHITE)
-   pygame.image.save(surf, 'test.bmp')
-   pygame.image.save(brdSurf, 'testBrd.bmp')
-   
-   testprv.serialize()
-   
-   
-   # before painting the worldmap, progress time to the start date
-   
-   sys.stdout.write("Progressing time to %s... " % START_DATE)
-   eventCount = 0
-   for p in provinces:
-      if p is None: continue
-      eventCount += p.ProgressTime(START_DATE)
-   
-   print "ok, %d events" % eventCount
-   
-   #============================================================================
-   # Draw World Map
-   #============================================================================
+def DrawWorldMap(provinces, countriesByTag):
    worldmap = pygame.Surface((5632,2048))
    for p in provinces:
       if p is None: continue
@@ -512,6 +307,259 @@ def main():
                
       if p.id % 100 == 0: print p.id
    pygame.image.save(worldmap,'world.bmp')
+
+def ReadCountries(file, euDir):
+   sys.stdout.write("Parsing countries... ")
+   prs = PdxParse.Parser(file)
+   root = prs.read2()
+   
+   countriesByTag = {}
+   for tag,node in root.children.items():
+      countryFile = node.data
+      f = os.path.join(euDir, "common", countryFile)
+      if not os.path.isfile(f):
+         print "Couldn't resolve tag: %s (%s)." % (tag, f)
+         continue
+      
+      cntryParse = PdxParse.Parser(os.path.join(euDir, "common", countryFile))
+      cntryRoot = cntryParse.read2()
+      
+      name = os.path.splitext(os.path.basename(countryFile))[0]
+      r,g,b = cntryRoot.children['color'].data
+      cnt = Country(name=name, tag=tag, color=pygame.Color(r,g,b,255))
+      countriesByTag[tag] = cnt
+      
+   print "ok"
+   return countriesByTag
+
+def ReadDefaultMap(file):
+   sys.stdout.write("Parsing default map... ")
+   prs = PdxParse.Parser(file)
+   root = prs.read2()
+   
+   seaProvinces = root.children['sea_starts'].data
+   lakeProvinces = root.children['lakes'].data
+   
+   print "ok"
+   return seaProvinces, lakeProvinces
+
+def ReadDefinitionsTable(file):
+   sys.stdout.write("Reading province definitions... ")
+   
+   provinces = [None] * 2954
+   colorHashToProvince = {}
+   count = 0
+   with open(file, 'r') as f:
+      rdr = csv.reader(f, delimiter=';')
+      
+      for row in rdr:
+         if len(row) < 5:
+            print "Invalid line in definition.csv: %s" % row
+            continue
+         
+         if not row[0].isdigit(): # or not row[5] == 'x': # probably the first line, just skip it
+            continue
+         
+         try:
+            id = int(row[0])
+            color = int(row[1]), int(row[2]), int(row[3])
+         except ValueError:
+            print "Invalid line in definition.csv: %s" % row
+            continue
+         
+         try:
+            if(row[4]!=''): name = str(row[4])
+            else: name = str(row[5])
+         except ValueError:
+            print "Invalid line in definition.csv: %s" % row
+            continue
+            
+         hash = hash_color(color)
+         prv = Province(name=name, id=id, mapColor=pygame.Color(color[0], color[1], color[2], 255), hash=hash)
+         assert(id < len(provinces))
+         provinces[id] = prv
+         colorHashToProvince[hash] = prv
+         count += 1
+         
+   print "%d ok" % count
+   return provinces, colorHashToProvince
+
+def ReadMapDump(file):
+   sys.stdout.write("Loading dump file 'clrpixel.dmp'... ")
+   
+   # load dump
+   colorHashToPixels = {}
+   with open("clrpixel.dmp","rb") as f:
+      bytes = f.read(SIZEOF_INT)
+      
+      numProvinces = struct.unpack('I', bytes)[0]
+      assert(0 < numProvinces <= 2954)
+      
+      for i in range(numProvinces):
+         bytes = f.read(2 * SIZEOF_INT)
+         colorHash, numPixels = struct.unpack('II', bytes)
+         assert(0 <= colorHash <= 256**3 and 0 <= numPixels <= 1000000)
+         
+         pixels = []
+         for j in range(numPixels):
+            bytes = f.read(2 * SIZEOF_SHORT)
+            px = struct.unpack('HH', bytes)
+            pixels.append(px)
+            
+         colorHashToPixels[colorHash] = pixels
+         if colorHash == 0:
+            print colorHash, ":", pixels
+   print "ok"
+   return colorHashToPixels
+
+def ReadProvinceHistories(path, provinces):
+   sys.stdout.write('Parsing province histories... ')
+   for file in os.listdir(path):
+      basename = os.path.splitext(file)[0]
+      idx = basename.find('-')
+      
+      if(idx == -1): idx = basename.find(' ')
+      
+      pid = int( basename[:idx].strip() )
+      name = basename[idx+1:].strip()
+      
+      # too many warnings here
+      #if provinces[pid].name != name:
+      #   print "Warning: Province %d name %s doesn't match file %s in history/provinces." % (pid, provinces[pid].name, file)
+      
+      histParse = PdxParse.Parser(os.path.join(path, file))
+      histRoot = histParse.read2()
+      
+      provinces[pid].history = histRoot
+   
+   noHistCount = 0
+   for prv in provinces:
+      if prv and not prv.history: noHistCount += 1
+   
+   print "%d ok%s" % (len(os.listdir(path)), ", %d not found" % noHistCount if noHistCount>0 else "")
+   return 0
+
+def ReadWorldMap(file, saveDump=True, binary=True):
+   # read world map
+   print("Building from world map... ")
+   img = PIL.Image.open(file)
+   px = img.load()
+   size_x, size_y = img.size
+   
+   print "Loaded '%s' (%dx%d px)." % ( mapFile, size_x, size_y )
+   
+   colorHashToPixels = {}
+   
+   numPixels = size_x*size_y
+   count = 0
+   
+   for i in range(size_x):
+      for j in range(size_y):
+         color = px[i, j]
+         colorHash = hash_color(color)
+         
+         if colorHash in colorHashToPixels:
+            colorHashToPixels[colorHash].append((i,j))
+         else:
+            colorHashToPixels[colorHash] = [(i,j), ]
+         
+         count += 1
+         if(count % (numPixels//10) == 0):
+            print "%.0f%%" % (100.0 * count / numPixels)
+            
+   numProvinces = len(colorHashToPixels.keys())         
+   print "Number of provinces: %d" % numProvinces
+   
+   if saveDump:
+      print "Saving color/pixel dictionary..."
+      if binary:
+         with open('clrpixel.dmp','wb') as f:
+            f.write( struct.pack('I',numProvinces) )
+            for clrHash,pixels in colorHashToPixels.items():
+               f.write( struct.pack('II',clrHash, len(pixels)) )
+               for px in pixels:
+                  f.write( struct.pack('HH', px[0], px[1]))
+      else:
+         with open('clrpixel.dat','w') as f:
+            f.write('number_of_provinces: %d\n' % numProvinces)
+            for clrHash,pixels in colorHashToPixels.items():
+               f.write('%d : ' % clrHash)
+               f.write(' '.join(['(%d,%d)' % (px[0], px[1]) for px in pixels]))
+               f.write('\n')
+               
+   return colorHashToPixels
+
+#===============================================================================
+# MAIN PROGRAM 
+#===============================================================================
+
+def main():
+   #============================================================================
+   # Init file paths
+   #============================================================================
+   euDir = os.path.join("C:\\","Program Files (x86)","Steam","steamapps","common","Europa Universalis IV")
+   
+   mapFile = os.path.join(euDir, "map", "provinces.bmp")
+   histPath = os.path.join(euDir, "history", "provinces")
+   defFile = os.path.join(euDir, "map", "definition.csv")
+   defaultMap = os.path.join(euDir, "map", "default.map")
+   countryTags = os.path.join(euDir, "common", "country_tags", "00_countries.txt")
+   
+   #test = PdxParse.Parser(os.path.join(histPath, "118 - Roma.txt"))
+   #root = test.read2()
+   #print root
+   
+   #============================================================================
+   # Read general EU4 data files, build provinces 
+   #============================================================================
+   
+   # read definition.csv
+   provinces, colorHashToProvince = ReadDefinitionsTable(defFile)
+   
+   # read default.map, set province terrain
+   seaProvinces, lakeProvinces = ReadDefaultMap(defaultMap)
+   for pid in seaProvinces: provinces[pid].prvType = PRV_OCEAN
+   for pid in lakeProvinces: provinces[pid].prvType = PRV_LAKE
+
+   # read country files
+   countriesByTag = ReadCountries(countryTags, euDir)
+   
+   # read province histories
+   ReadProvinceHistories(histPath, provinces)
+
+
+   #============================================================================
+   # Build world map (from dump or by parsing provinces.bmp)
+   #============================================================================
+   
+   # check if dump file exists
+   if os.path.isfile("clrpixel.dmp"):
+      colorHashToPixels = ReadMapDump("clrpixel.dmp")
+   else:
+      colorHashToPixels = ReadWorldMap(mapFile, saveDump=True, binary=True)
+   
+   
+   #============================================================================
+   # Build province pixels
+   #============================================================================
+   BuildProvincePixels(colorHashToProvince, colorHashToPixels)
+   
+   # before painting the worldmap, progress time to the start date
+   sys.stdout.write("Progressing time to %s... " % START_DATE)
+   eventCount = 0
+   for p in provinces:
+      if p is None: continue
+      eventCount += p.ProgressTime(START_DATE)
+   print "ok, %d events" % eventCount
+   
+   
+   #============================================================================
+   # Draw World Map
+   #============================================================================
+   DrawWorldMap(provinces, countriesByTag)
+   
+   
+   return
          
    # export mask bitmaps for every province
    # print "Writing mask files..."
