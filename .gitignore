@@ -1,6 +1,7 @@
 # User
 *.bmp
 .settings
+data
 
 
 # Byte-compiled / optimized / DLL files

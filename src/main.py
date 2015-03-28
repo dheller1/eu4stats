@@ -62,6 +62,10 @@ class Province:
    def ExportToFile(self, file):
       with open(file, 'wb') as f:
          f.write(self.serialize())
+         
+   def ImportFromFile(self, file):
+      with open(file, 'rb') as f:
+         self.deserialize(f.read())
    
    def ProcessHistoryEvent(self, event):
       if 'owner' in event.children:
@@ -127,41 +131,54 @@ class Province:
             var, fmt = d
          else: raise "Invalid data in serialize method!", d
          
-         if length == 0: continue # empty data
-         elif length == -1: # single variable
-            s += struct.pack( fmt, var )
-            print s
-         elif length >= 1: # list of variables
-            s += struct.pack("I", length)
-            s += struct.pack( fmt*length, *var )
-            print s
+         # is it a string? pack differently
+         if fmt == "s":
+            s += struct.pack("I", len(var)) # pack string length
+            s += var                        # just add the string
+         
+         else:
+            if length == 0: continue # empty data
+            elif length == -1: # single variable
+               s += struct.pack( fmt, var )
+            elif length >= 1: # list of variables
+               s += struct.pack("I", length)
+               s += struct.pack( fmt*length, *var )
             
       return s
    
    def deserialize(self, s):
       # unpack
       offset = 0
-      self.name = struct.unpack_from("s", s, offset)[0]
-      offset += len(self.name)
+      
+      lenName = struct.unpack_from("I", s, offset)[0]
+      offset += SIZEOF_INT
+      
+      self.name = s[offset:offset+lenName]
+      offset += lenName
       
       self.id = struct.unpack_from("I", s, offset)[0]
       offset += SIZEOF_INT
       
-      colorTpl = struct.unpack_from("BBBB", s, offset)[0]
-      offset += 4
+      lenColorTpl = struct.unpack_from("I", s, offset)[0]
+      offset += SIZEOF_INT
+      
+      colorTpl = struct.unpack_from("B"*lenColorTpl, s, offset)
+      offset += lenColorTpl
       
       lenPixels = struct.unpack_from("I", s, offset)[0]
       offset += SIZEOF_INT
-      self.pixels = struct.unpack_from("B"*lenPixels, s, offset)[0]
+      self.pixels = struct.unpack_from("B"*lenPixels, s, offset)
       offset += 1 * lenPixels
       
       lenBorderPixels = struct.unpack_from("I", s, offset)[0]
       offset += SIZEOF_INT
-      self.borderPixels = struct.unpack_from("B"*lenBorderPixels, s, offset)[0]
+      self.borderPixels = struct.unpack_from("B"*lenBorderPixels, s, offset)
       offset += 1 * lenBorderPixels
       
-      bndRectTpl = struct.unpack_from("IIII", s, offset)[0]
-      offset += 4 * SIZEOF_INT
+      lenRect = struct.unpack_from("I", s, offset)[0]
+      offset += SIZEOF_INT
+      bndRectTpl = struct.unpack_from("I"*lenRect, s, offset)
+      offset += lenRect * SIZEOF_INT
       
       self.prvType = struct.unpack_from("I", s, offset)[0]
       offset += SIZEOF_INT
@@ -171,9 +188,7 @@ class Province:
       self.bndRect = pygame.Rect(*bndRectTpl)
       self.hash = hash_color(self.mapColor)
       
-      # test
-      print self.id, self.name, self.mapColor, self.prvType, self.bndRect
-      print self.pixels, self.borderPixels
+      return 0
       
 class ProvinceHistory:
    def __init__(self, owner='???', controller='???'):
@@ -509,6 +524,7 @@ def main():
    #root = test.read2()
    #print root
    
+   
    #============================================================================
    # Read general EU4 data files, build provinces 
    #============================================================================
@@ -526,23 +542,30 @@ def main():
    
    # read province histories
    ReadProvinceHistories(histPath, provinces)
+   
+   
+   # read province export files
+   for file in os.listdir('data/provinces'):
+      fileWithPath = os.path.join('data','provinces',file)
+      pid = int(os.path.splitext(file)[0])
+      provinces[pid].ImportFromFile(fileWithPath)
 
 
-   #============================================================================
-   # Build world map (from dump or by parsing provinces.bmp)
-   #============================================================================
-   
-   # check if dump file exists
-   if os.path.isfile("clrpixel.dmp"):
-      colorHashToPixels = ReadMapDump("clrpixel.dmp")
-   else:
-      colorHashToPixels = ReadWorldMap(mapFile, saveDump=True, binary=True)
-   
-   
-   #============================================================================
-   # Build province pixels
-   #============================================================================
-   BuildProvincePixels(colorHashToProvince, colorHashToPixels)
+#    #============================================================================
+#    # Build world map (from dump or by parsing provinces.bmp)
+#    #============================================================================
+#    
+#    # check if dump file exists
+#    if os.path.isfile("clrpixel.dmp"):
+#       colorHashToPixels = ReadMapDump("clrpixel.dmp")
+#    else:
+#       colorHashToPixels = ReadWorldMap(mapFile, saveDump=True, binary=True)
+#    
+#    
+#    #============================================================================
+#    # Build province pixels
+#    #============================================================================
+#    BuildProvincePixels(colorHashToProvince, colorHashToPixels)
    
    # before painting the worldmap, progress time to the start date
    sys.stdout.write("Progressing time to %s... " % START_DATE)
@@ -551,6 +574,14 @@ def main():
       if p is None: continue
       eventCount += p.ProgressTime(START_DATE)
    print "ok, %d events" % eventCount
+   
+   
+   
+   #============================================================================
+   # Export provinces
+   #============================================================================
+   #for prv in provinces:
+   #   if prv is not None: prv.ExportToFile(os.path.join('data','provinces','%d.prv' % prv.id))
    
    
    #============================================================================
